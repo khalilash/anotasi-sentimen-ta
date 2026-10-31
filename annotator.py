@@ -20,7 +20,8 @@ st.set_page_config(page_title="Anotasi Sentimen", layout="centered")
 
 @st.cache_resource
 def get_ws():
-    gc = gspread.service_account(filename="credentials.json")
+    # Mengambil kredensial langsung dari Secrets Streamlit Cloud
+    gc = gspread.service_account_from_dict(st.secrets["gspread"])
     return gc.open_by_key(SHEET_ID).worksheet(WS_NAME)
 
 def parse_labels(row):
