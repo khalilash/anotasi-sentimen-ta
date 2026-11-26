@@ -3,6 +3,7 @@ Validasi ulang label akurasi yang ditandai merah di sheet.
 Menampilkan penilaian dua dokter, lalu label final disimpan ke kolom T dan U.
 """
 import html
+import json
 
 import gspread
 import streamlit as st
@@ -59,7 +60,8 @@ st.markdown(
 
 @st.cache_resource
 def get_ws():
-    gc = gspread.service_account_from_dict(dict(st.secrets["gspread"]))
+    info = json.loads(st.secrets["gspread_json"])
+    gc = gspread.service_account_from_dict(info)
     return gc.open_by_key(SHEET_ID).worksheet(WS_NAME)
 
 
