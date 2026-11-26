@@ -3,13 +3,9 @@ Validasi ulang label akurasi yang ditandai merah di sheet.
 Menampilkan penilaian dua dokter, lalu label final disimpan ke kolom T dan U.
 """
 import html
-import json
 
-import gspread
+import requests
 import streamlit as st
-
-SHEET_ID = "1O2KPLBGoChOUeRzpyu0wLVYhHiEyKZuPh_eA9lID1Go"
-WS_NAME = "Sheet Gabungan"
 
 # nomor baris di luar yang merah, kalau mau ikut ditampilkan. contoh: [42, 163, 164, 204, 210]
 BARIS_TAMBAHAN = [210]
@@ -58,32 +54,21 @@ st.markdown(
 )
 
 
-@st.cache_resource
-def get_ws():
-    info = json.loads(st.secrets["gspread_json"])
-    gc = gspread.service_account_from_dict(info)
-    return gc.open_by_key(SHEET_ID).worksheet(WS_NAME)
-
-
-def baris_merah(ws):
-    # baca warna latar kolom A
-    meta = ws.client.fetch_sheet_metadata(
-        ws.spreadsheet_id,
-        params={
-            "includeGridData": "true",
-            "ranges": f"'{WS_NAME}'!A:A",
-            "fields": "sheets(data(rowData(values(effectiveFormat(backgroundColor)))))",
-        },
-    )
-    hasil = set()
-    for no, baris in enumerate(meta["sheets"][0]["data"][0].get("rowData", []), start=1):
-        sel = (baris.get("values") or [{}])[0]
-        warna = sel.get("effectiveFormat", {}).get("backgroundColor", {})
-        r, g, b = (warna.get(k, 0) for k in ("red", "green", "blue"))
-        # merah tua maupun merah muda
-        if r > 0.8 and g < 0.85 and b < 0.85 and abs(g - b) < 0.08:
-            hasil.add(no)
+def panggil(aksi, **isi):
+    # kirim permintaan ke Apps Script yang menempel di sheet
+    isi.update(aksi=aksi, token=st.secrets["token"])
+    r = requests.post(st.secrets["script_url"], json=isi, timeout=30)
+    r.raise_for_status()
+    hasil = r.json()
+    if not hasil["ok"]:
+        raise RuntimeError(hasil["pesan"])
     return hasil
+
+
+def merah(kode):
+    # kode warna "#rrggbb", merah tua maupun merah muda
+    r, g, b = (int(kode[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    return r > 0.8 and g < 0.85 and b < 0.85 and abs(g - b) < 0.08
 
 
 def baca_dokter(baris, awal):
@@ -93,13 +78,12 @@ def baca_dokter(baris, awal):
 
 
 def muat_data():
-    ws = get_ws()
-    merah = baris_merah(ws) | set(BARIS_TAMBAHAN)
+    sheet = panggil("baca")
     data = []
     pilihan = {p.lower(): p for p in PILIHAN}
-    for no, r in enumerate(ws.get_all_values(), start=1):
-        r = r + [""] * (C_ALASAN + 1 - len(r))
-        if no == 1 or no not in merah or not r[C_KOMENTAR].strip():
+    for no, (r, warna) in enumerate(zip(sheet["nilai"], sheet["warna"]), start=1):
+        dipakai = merah(warna) or no in BARIS_TAMBAHAN
+        if no == 1 or not dipakai or not r[C_KOMENTAR].strip():
             continue
         data.append({
             "baris": no,
@@ -120,19 +104,7 @@ def belum_diisi(data, mulai=0):
 
 
 def simpan(item, label, alasan):
-    ws = get_ws()
-    r = item["baris"]
-    # jaga-jaga kalau sheet diurutkan atau ada baris disisipkan
-    if (ws.cell(r, C_KOMENTAR + 1).value or "").strip() != item["komentar"].strip():
-        st.error("Susunan sheet berubah. Klik 'Muat ulang data', lalu isi lagi.")
-        st.stop()
-    ws.batch_update(
-        [
-            {"range": "T1:U1", "values": [["Final", "Alasan Final"]]},
-            {"range": f"T{r}:U{r}", "values": [[label, alasan]]},
-        ],
-        value_input_option="RAW",
-    )
+    panggil("simpan", baris=item["baris"], komentar=item["komentar"], label=label, alasan=alasan)
     item["final"] = label
     item["alasan"] = alasan
 
@@ -161,7 +133,14 @@ def muat_ulang():
 
 if "data" not in st.session_state:
     with st.spinner("Memuat data..."):
-        st.session_state.data = muat_data()
+        try:
+            st.session_state.data = muat_data()
+        except RuntimeError as e:
+            st.error(f"Gagal memuat data: {e}")
+            st.stop()
+        except requests.RequestException:
+            st.error("Tidak bisa terhubung ke sheet. Cek script_url dan akses deployment Apps Script.")
+            st.stop()
     awal = belum_diisi(st.session_state.data)
     st.session_state.pos = len(st.session_state.data) if awal is None else awal
 
@@ -256,7 +235,10 @@ if kanan.button("Simpan & lanjut →", type="primary", width="stretch"):
         try:
             with st.spinner("Menyimpan..."):
                 simpan(item, label, alasan.strip())
-        except gspread.exceptions.APIError:
+        except RuntimeError as e:
+            st.error(f"Gagal menyimpan: {e}")
+            st.stop()
+        except requests.RequestException:
             st.error("Gagal menyimpan. Tunggu sebentar lalu klik simpan lagi.")
             st.stop()
         st.session_state.tersimpan = True
