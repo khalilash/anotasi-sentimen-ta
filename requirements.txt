@@ -1,2 +1,2 @@
-streamlit
-gspread
+streamlit>=1.50
+requests
